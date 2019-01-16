@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="e834dca6-9acb-4d40-b929-a22ac34767c2" name="ai" url="http://101.132.105.149">
+        <fileTransfer host="101.132.105.149" port="10088" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" />
+          </advancedOptions>
+          <option name="port" value="10088" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
