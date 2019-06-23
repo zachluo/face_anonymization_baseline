@@ -2,9 +2,10 @@ import torch
 import torch.nn.functional as F
 from .base_model import BaseModel
 from . import networks
+from util.image_pool import ImagePool
 
 
-class Pix2PixModel(BaseModel):
+class Pix2PixAlignedModel(BaseModel):
     """ This class implements the pix2pix models, for learning a mapping from input images to output images given paired data.
 
     The models training requires '--dataset_mode aligned' data.
@@ -36,6 +37,7 @@ class Pix2PixModel(BaseModel):
             parser.add_argument('--lambda_rec', type=float, default=1, help='weight for reconstruction loss')
             parser.add_argument('--lambda_fr', type=float, default=1, help='weight for face recognition loss')
             parser.add_argument('--lambda_GAN', type=float, default=1, help='weight of GAN loss in the fake face or reconstruction face')
+            parser.add_argument('--fr_level', type=str, help='which classifier level in the sphere face model you use in fr loss')
 
         return parser
 
@@ -46,10 +48,12 @@ class Pix2PixModel(BaseModel):
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
         BaseModel.__init__(self, opt)
+        if self.opt.fr_level:
+            self.opt.fr_level = self.opt.fr_level.split(',')
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_fr_fake_a', 'G_id', 'G_GAN_real_a_fake_a', 'G_GAN_real_a_rec_a',
-                           'C_fr_real_a', 'C_fr_fake_a', 'C_fr_real_n',
-                           'D_real_a_fake_a', 'D_real_a_real_n', 'D_real_a_rec_a',
+        self.loss_names = ['G_fr_fake_a', 'G_fr_rec_a', 'G_id', 'G_GAN_fake_a', 'G_GAN_rec_a',
+                           'C_fr_real_a', 'C_fr_fake_a', 'C_fr_rec_a',
+                           'D_real_a', 'D_fake_a', 'D_rec_a',
                            'G_rec']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         self.visual_names = ['real_a', 'fake_a']
@@ -77,42 +81,45 @@ class Pix2PixModel(BaseModel):
                 self.netC = networks.define_C(opt.sphere_model_path, self.gpu_ids)
                 from models.net_sphere import AngleLoss
                 self.criterionCLS = AngleLoss().to(self.device)
-                self.optimizer_C = torch.optim.SGD(self.netC.parameters(), lr=opt.lr, momentum=0.9, weight_decay=0.0005)
+                self.optimizer_C = torch.optim.Adam(self.netC.parameters(), lr=opt.lr * 0.1, betas=(self.opt.beta1, 0.999))
                 self.optimizers.append(self.optimizer_C)
 
             if self.opt.lambda_rec > 0.:
                 self.netR = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
-                                      not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+                                     not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
                 self.criterionRec = torch.nn.L1Loss().to(self.device)
-                self.optimizer_G = torch.optim.SGD(list(self.netG.parameters()) + list(self.netR.parameters()),
-                                                   lr=opt.lr, momentum=0.9, weight_decay=0.0005)
+                self.optimizer_G = torch.optim.Adam(list(self.netG.parameters()) + list(self.netR.parameters()),
+                                                  lr=opt.lr, betas=(self.opt.beta1, 0.999))
             else:
-                self.optimizer_G = torch.optim.SGD(self.netG.parameters(), lr=opt.lr, momentum=0.9, weight_decay=0.0005)
+                self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(self.opt.beta1, 0.999))
+
             self.optimizers.append(self.optimizer_G)
 
             if self.opt.lambda_id > 0.:
                 self.criterionL1 = torch.nn.L1Loss().to(self.device)
 
             if self.opt.lambda_GAN:
-                self.netD = networks.define_D(opt.input_nc + opt.output_nc, opt.ndf, opt.netD,
+                self.netD = networks.define_D(opt.input_nc, opt.ndf, opt.netD, None, None,
                                               opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
                 self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)
-                self.optimizer_D = torch.optim.SGD(self.netD.parameters(), lr=opt.lr, momentum=0.9, weight_decay=0.0005)
+                self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(self.opt.beta1, 0.999))
                 self.optimizers.append(self.optimizer_D)
 
-            self.loss_D_real_a_fake_a = 0
-            self.loss_D_real_a_real_n = 0
-            self.loss_D_real_a_rec_a = 0
-            self.loss_D_gradient_penalty = 0
+                self.fake_pool = ImagePool(self.opt.pool_size)
+                self.rec_pool = ImagePool(self.opt.pool_size)
+
+            self.loss_D_real_a = 0
+            self.loss_D_fake_a = 0
+            self.loss_D_rec_a = 0
             self.loss_G_fr_fake_a = 0
+            self.loss_G_fr_rec_a = 0
             self.loss_G_id = 0
-            self.loss_G_GAN_real_a_fake_a = 0
-            self.loss_G_GAN_real_a_rec_a = 0
+            self.loss_G_GAN_fake_a = 0
+            self.loss_G_GAN_rec_a = 0
             self.loss_G_rec = 0
             self.loss_C_fr_real_a = 0
             self.loss_C_fr_fake_a = 0
-            self.loss_C_fr_real_n = 0
-
+            self.loss_C_fr_rec_a = 0
 
     def set_input(self, input):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
@@ -139,87 +146,105 @@ class Pix2PixModel(BaseModel):
         self.real_n_aligned = F.grid_sample(self.real_n, grid_n)
         if self.opt.lambda_rec > 0:
             self.rec_a = self.netR(self.fake_a)
+            self.rec_a_aligned = F.grid_sample(self.rec_a, grid_a)
 
 
     def backward_C(self):
         """Calculate GAN loss for the discriminator"""
         # Fake; stop backprop to the generator by detaching fake_B
-
-        logit_real_a_aligned = self.netC(self.real_a_aligned)
-        logit_fake_a_aligned = self.netC(self.fake_a_aligned.detach())
-        logit_real_n_aligned = self.netC(self.real_n_aligned)
-
-        self.loss_C_fr_real_a = self.criterionCLS(logit_real_a_aligned, self.label_a) * self.opt.lambda_fr
-        self.loss_C_fr_fake_a = self.criterionCLS(logit_fake_a_aligned, self.label_a) * self.opt.lambda_fr
-        self.loss_C_fr_real_n = self.criterionCLS(logit_real_n_aligned, self.label_n) * self.opt.lambda_fr
-        self.loss_C = self.loss_C_fr_real_a + self.loss_C_fr_fake_a + self.loss_C_fr_real_n
-
-        self.loss_C.backward()
+        logit_real_a_aligned = self.netC(self.real_a_aligned, self.opt.fr_level)
+        logit_fake_a_aligned = self.netC(self.fake_a_aligned.detach(), self.opt.fr_level)
+        if self.opt.lambda_rec > 0:
+            logit_rec_a_aligned = self.netC(self.rec_a_aligned.detach(), self.opt.fr_level)
+        self.loss_C_fr_real_a = self.loss_C_fr_fake_a = self.loss_C_fr_rec_a = 0
+        for key in self.opt.fr_level:
+            self.loss_C_fr_real_a += self.loss_C_fr_real_a + self.criterionCLS(logit_real_a_aligned[key], self.label_a)
+            self.loss_C_fr_fake_a += self.loss_C_fr_fake_a + self.criterionCLS(logit_fake_a_aligned[key], self.label_a)
+            if self.opt.lambda_rec > 0:
+                self.loss_C_fr_rec_a += self.loss_C_fr_rec_a - self.criterionCLS(logit_rec_a_aligned[key], self.label_a)
+        loss_C = (self.loss_C_fr_real_a + self.loss_C_fr_fake_a + self.loss_C_fr_rec_a) * self.opt.lambda_fr
+        if self.opt.lambda_rec > 0:
+            loss_C /= 3
+        else:
+            loss_C /= 2
+        loss_C.backward()
 
     def backward_D(self):
-        real_a_fake_a = torch.cat((self.real_a, self.fake_a.detach()), 1)
-        logit_real_a_fake_a = self.netD(real_a_fake_a)
-        real_a_real_n = torch.cat((self.real_a, self.real_n), 1)
-        logit_real_a_real_n = self.netD(real_a_real_n)
+        fake_a = self.fake_pool.query(self.fake_a)
+        logit_fake_a = self.netD(fake_a.detach())
+        logit_real_a = self.netD(self.real_a)
         if self.opt.lambda_rec > 0:
-            real_a_rec_a = torch.cat((self.real_a, self.rec_a.detach()), 1)
-            logit_real_a_rec_a = self.netD(real_a_rec_a)
-            self.loss_D_real_a_rec_a = self.criterionGAN(logit_real_a_rec_a, False) * self.opt.lambda_GAN
-        self.loss_D_real_a_fake_a = self.criterionGAN(logit_real_a_fake_a, False) * self.opt.lambda_GAN
-        self.loss_D_real_a_real_n = self.criterionGAN(logit_real_a_real_n, True) * self.opt.lambda_GAN
-        if self.opt.gan_mode == 'wgangp':
-            self.loss_D_gradient_penalty, _ = networks.cal_gradient_penalty(self.netD, real_a_real_n.detach(), real_a_fake_a.detach(),
-                                                                        self.device, lambda_gp=self.opt.lambda_GAN)
+            rec_a = self.fake_pool.query(self.rec_a)
+            logit_rec_a = self.netD(rec_a.detach())
+            self.loss_D_rec_a = self.criterionGAN(logit_rec_a, False) * self.opt.lambda_GAN
+        self.loss_D_fake_a = self.criterionGAN(logit_fake_a, False) * self.opt.lambda_GAN
+        self.loss_D_real_a = self.criterionGAN(logit_real_a, True) * self.opt.lambda_GAN
 
-        self.loss_D = self.loss_D_real_a_fake_a + self.loss_D_real_a_real_n + self.loss_D_real_a_rec_a + self.loss_D_gradient_penalty
-        self.loss_D.backward(retain_graph=True)
+        loss_D = self.loss_D_real_a + \
+                 self.loss_D_fake_a + \
+                 self.loss_D_rec_a
+        if self.opt.lambda_rec > 0:
+            loss_D /= 3
+        else:
+            loss_D /= 2
+        loss_D.backward()
 
     def backward_G(self):
         """Calculate GAN and L1 loss for the generator"""
         # First, G(A) should fake the discriminator
 
         if self.opt.lambda_fr > 0:
-            logit_fake_a_aligned = self.netC(self.fake_a_aligned)
-            self.loss_G_fr_fake_a = (15 - self.criterionCLS(logit_fake_a_aligned, self.label_a)) * self.opt.lambda_fr
+            logit_fake_a_aligned = self.netC(self.fake_a_aligned, self.opt.fr_level)
+            if self.opt.lambda_rec > 0:
+                logit_rec_a_aligned = self.netC(self.rec_a_aligned, self.opt.fr_level)
+            self.loss_G_fr_fake_a = 0
+            self.loss_G_fr_rec_a = 0
+            for key in self.opt.fr_level:
+                self.loss_G_fr_fake_a = self.loss_G_fr_fake_a - self.criterionCLS(logit_fake_a_aligned[key], self.label_a) * self.opt.lambda_fr
+                if self.opt.lambda_rec > 0:
+                    self.loss_G_fr_rec_a = self.loss_G_fr_rec_a + self.criterionCLS(logit_rec_a_aligned[key], self.label_a) * self.opt.lambda_fr
         if self.opt.lambda_id > 0:
             self.loss_G_id = self.opt.lambda_id * self.criterionL1(self.fake_a, self.real_a)
         if self.opt.lambda_GAN > 0:
-            real_a_fake_a = torch.cat((self.real_a, self.fake_a), 1)
-            logit_real_a_fake_a = self.netD(real_a_fake_a)
-            self.loss_G_GAN_real_a_fake_a = self.criterionGAN(logit_real_a_fake_a, True) * self.opt.lambda_GAN
+            logit_fake_a = self.netD(self.fake_a)
+            self.loss_G_GAN_fake_a = self.criterionGAN(logit_fake_a, True) * self.opt.lambda_GAN
             if self.opt.lambda_rec > 0:
-                real_a_rec_a = torch.cat((self.real_a, self.rec_a), 1)
-                logit_real_a_rec_a = self.netD(real_a_rec_a)
-                self.loss_G_GAN_real_a_rec_a = self.criterionGAN(logit_real_a_rec_a, True) * self.opt.lambda_GAN
+                logit_rec_a = self.netD(self.rec_a)
+                self.loss_G_GAN_rec_a = self.criterionGAN(logit_rec_a, True) * self.opt.lambda_GAN
         if self.opt.lambda_rec > 0:
             self.loss_G_rec = self.opt.lambda_rec * self.criterionRec(self.real_a, self.rec_a)
 
-        self.loss_G = self.loss_G_fr_fake_a + self.loss_G_id + self.loss_G_GAN_real_a_fake_a + self.loss_G_GAN_real_a_rec_a + self.loss_G_rec
+        loss_G = self.loss_G_fr_fake_a + \
+                 self.loss_G_fr_rec_a + \
+                 self.loss_G_id + \
+                 self.loss_G_GAN_fake_a + \
+                 self.loss_G_GAN_rec_a + \
+                 self.loss_G_rec
 
-        self.loss_G.backward()
+        loss_G.backward()
 
     def optimize_parameters(self):
-        self.forward()                   # compute fake images: G(A)
+        self.forward()
 
         if self.opt.lambda_fr:
             # update C
-            self.set_requires_grad(self.netC, True)  # enable backprop for D
-            self.optimizer_C.zero_grad()     # set C's gradients to zero
-            self.backward_C()                # calculate gradients for D
-            self.optimizer_C.step()          # update D's weights
+            self.set_requires_grad(self.netC, True)
+            self.optimizer_C.zero_grad()
+            self.backward_C()
+            self.optimizer_C.step()
 
         if self.opt.lambda_GAN:
             # update D on M
             self.set_requires_grad(self.netD, True)
-            self.optimizer_D.zero_grad()  # set D's gradients to zero
+            self.optimizer_D.zero_grad()
             self.backward_D()
             self.optimizer_D.step()
 
         # update G and R
         if self.opt.lambda_fr:
-            self.set_requires_grad(self.netC, False)  # D requires no gradients when optimizing G
+            self.set_requires_grad(self.netC, False)
         if self.opt.lambda_GAN:
             self.set_requires_grad(self.netD, False)
-        self.optimizer_G.zero_grad()        # set G's gradients to zero
-        self.backward_G()                   # calculate graidents for G
-        self.optimizer_G.step()             # udpate G's weights
+        self.optimizer_G.zero_grad()
+        self.backward_G()
+        self.optimizer_G.step()

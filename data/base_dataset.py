@@ -6,7 +6,10 @@ import torch.utils.data as data
 from PIL import Image
 import torchvision.transforms as transforms
 from abc import ABC, abstractmethod
-
+import torch
+import cv2
+import numpy as np
+from skimage.segmentation import slic
 
 class BaseDataset(data.Dataset, ABC):
     """This class is an abstract base class (ABC) for datasets.
@@ -61,11 +64,53 @@ class BaseDataset(data.Dataset, ABC):
 def get_transform(opt):
     """Create a torchvision transformation function
     """
-
     transform_list = [transforms.Scale((opt.load_size, opt.load_size)),
                       transforms.ToTensor(),
                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
     return transforms.Compose(transform_list)
+
+def get_transform_baseline(opt):
+    transforms_list = [transforms.Resize((opt.load_size, opt.load_size))]
+    if opt.baseline != 'edge' and opt.baseline != 'blur':
+        transforms_list.append(transforms.ToTensor())
+
+    def masked(image):
+        ratio = 0.2
+        image[:, int(ratio * image.shape[1]):int((1 - ratio) * image.shape[1]), int(ratio * image.shape[2]):int((1 - ratio) * image.shape[2])].fill_(0.5)
+        return image
+    def noise(image):
+        image += (torch.randn(image.shape) * 0.5)
+        return image
+    def super_pixel(image):
+        numpy_image = image.detach().numpy()
+        numpy_image_new = image.detach().numpy()
+        seg = slic(np.transpose(numpy_image, [1, 2, 0]))
+        for j in np.unique(seg):
+            numpy_image_new[:, seg == j] = np.mean(numpy_image[:, seg == j], axis=1, keepdims=True)
+        return image.new(numpy_image_new)
+    def edge(image):
+        numpy_image = np.array(image)
+        result = cv2.Canny(numpy_image, 100, 200)
+        return Image.fromarray(result)
+
+    if opt.baseline == 'blur':
+        transforms_list.extend([transforms.Resize((8, 8)),
+                                transforms.Resize((opt.load_size, opt.load_size)),
+                                transforms.ToTensor()])
+    elif opt.baseline == 'masked':
+        transforms_list.append(transforms.Lambda(masked))
+    elif opt.baseline == 'noise':
+        transforms_list.append(transforms.Lambda(noise))
+    elif opt.baseline == 'super_pixel':
+        transforms_list.append(transforms.Lambda(super_pixel))
+    elif opt.baseline == 'edge':
+        transforms_list.extend([transforms.Grayscale(),
+                                transforms.Lambda(edge),
+                                transforms.ToTensor()])
+
+    transforms_list.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+    print(transforms_list)
+    return transforms.Compose(transforms_list)
 
 
 def __adjust(img):

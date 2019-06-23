@@ -11,9 +11,10 @@ from util.matlab_cp2tform import get_similarity_transform_for_cv2
 import torch
 import torchvision
 
-class CASIADataset(BaseDataset):
+class CASIABaselineDataset(BaseDataset):
     def __init__(self, opt):
         BaseDataset.__init__(self, opt)
+
         bbox_path = os.path.join(self.root, 'casia_detection.txt')
         self.bbox_dict = {}
         with open(bbox_path) as fd:
@@ -37,6 +38,7 @@ class CASIADataset(BaseDataset):
                                             min(int(ocenter_x + ehalf_width), 127),
                                             max(int(ocenter_y - ehalf_height), 0),
                                             min(int(ocenter_y + ehalf_height), 127)]
+
 
         with open(os.path.join(self.root, opt.landmark_path)) as f:
             self.indexlist = [line.rstrip('\n').split() for line in f]
@@ -86,7 +88,7 @@ class CASIADataset(BaseDataset):
             rand = random.randint(0, len(self.indexlist) - 1)
             if self.indexlist[rand][1] != a_cls:
                 break
-        return self.indexlist[rand]
+        return self.indexlist[rand][0]
 
     def sample_positive(self, a_cls, img_name):
         while True:
@@ -110,26 +112,22 @@ class CASIADataset(BaseDataset):
     def load_img(self, index):
         info = self.indexlist[index]
         cls = info[1]
-        info_n = self.sample_negative(cls)
-        cls_n = info[1]
         landmark = [(float(k)/125. - 1) for k in info[2:]]
-        landmark_n = [(float(k)/125. - 1) for k in info_n[2:]]
         tfm = self.alignment(landmark).astype(np.float32)
-        tfm_n = self.alignment(landmark_n).astype(np.float32)
         img_path = os.path.join(self.root, self.img_dir, info[0])
         p_path = os.path.join(self.root, self.img_dir, self.sample_positive(cls, info[0]))
-        n_path = os.path.join(self.root, self.img_dir, info_n[0])
+        n_path = os.path.join(self.root, self.img_dir, self.sample_negative(cls))
         img = Image.open(img_path).convert('RGB')
         p_img = Image.open(p_path).convert("RGB")
-        img_n = Image.open(n_path).convert("RGB")
+        n_img = Image.open(n_path).convert("RGB")
 
         a_img = self.vggface_transform(img)
         p_img = self.vggface_transform(p_img)
-        n_img = self.vggface_transform(img_n)
+        n_img = self.vggface_transform(n_img)
 
         bbox = np.asarray(self.bbox_dict[info[0]])
 
-        return img, cls, tfm, img_path, a_img, p_img, n_img, cls_n, tfm_n, img_n, bbox
+        return img, cls, tfm, img_path, a_img, p_img, n_img, bbox
 
     def load_path(self, index):
         info = self.indexlist[index]
@@ -140,23 +138,27 @@ class CASIADataset(BaseDataset):
         return img_path, p_path, n_path
 
     def __getitem__(self, index):
-        _a, a_cls, a_tfm, img_path, a_img, p_img, n_img, n_cls, n_tfm, _n, bbox = self.load_img(index)
+        _a, a_cls, a_tfm, img_path, a_img, p_img, n_img, bbox = self.load_img(index)
 
         # transform images
         real_a = self.transform(_a)
-        real_n = self.transform(_n)
+        fake_a = self.transform_baseline(_a)
 
         return {'real': real_a,
                 'real_path': img_path,
-                'real_n': real_n,
+                'fake': fake_a,
                 'a_img': a_img,
                 'p_img': p_img,
                 'n_img': n_img,
                 'theta': a_tfm,
-                'theta_n': n_tfm,
-                'label': a_cls,
-                'label_n': n_cls,
                 'bbox': bbox}
+
+    # def __getitem__(self, index):
+    #     a_path, p_path, n_path = self.load_path(index)
+    #
+    #     return {'real_path': a_path,
+    #             'p_path': p_path,
+    #             'n_path': n_path}
 
     def __len__(self):
         return len(self.indexlist)
@@ -181,7 +183,7 @@ if __name__ == '__main__':
         return s
 
     opt = option()
-    casia = CASIADataset(opt)
+    casia = CASIABaselineDataset(opt)
     print('{} images in the testing set'.format(len(casia)))
     with open('fake.txt', 'w') as f:
         for i in tqdm.tqdm(iter(casia)):
@@ -196,3 +198,4 @@ if __name__ == '__main__':
             s += ' '.join([merge_path(i['real_path'], 'real'), merge_path(i['p_path'], 'real'), '1']) + '\n'
             s += ' '.join([merge_path(i['real_path'], 'real'), merge_path(i['real_path'], 'rec'), '1']) + '\n'
             f.write(s)
+

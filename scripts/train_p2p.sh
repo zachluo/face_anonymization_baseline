@@ -2,18 +2,24 @@ set -ex
 python train.py --dataroot /p300/dataset/casia \
                 --model pix2pix \
                 --netG resnet_9blocks \
+                --netD multiD \
                 --dataset_mode casia \
                 --landmark_path casia_landmark.txt \
                 --sphere_model_path ./pretrain_model/sphere20a_20171020.pth \
-                --gpu_ids 0,1 \
+                --gpu_ids 3 \
                 --display_port 31190 \
                 --display_server http://10.10.10.100 \
                 --num_threads 32 \
-                --batch_size 16 \
-                --lambda_rec 0\
+                --batch_size 24 \
+                --lambda_rec 10\
                 --lambda_id 0 \
                 --lambda_fr 0 \
                 --lambda_GAN 1 \
-                --name rec_0_id_0_fr_0_WGAN_1 \
-                --display_env rec_0_id_0_fr_0_WGAN_1 \
-                --gan_mode wgangp
+                --name rec_10_id_0_fr_0_GAN_1 \
+                --display_env rec_10_id_0_fr_0_GAN_1 \
+                --load_size 128 \
+                --normG batch \
+                --normD none \
+                --load_pretrain rec_0_id_10_fr_5_GAN_0 \
+                --continue_train \
+                --epoch latest

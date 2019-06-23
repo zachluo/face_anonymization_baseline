@@ -153,19 +153,19 @@ class BaseModel(ABC):
                 else:
                     torch.save(net.cpu().state_dict(), save_path)
 
-    def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
-        """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
-        key = keys[i]
-        if i + 1 == len(keys):  # at the end, pointing to a parameter/buffer
-            if module.__class__.__name__.startswith('InstanceNorm') and \
-                    (key == 'running_mean' or key == 'running_var'):
-                if getattr(module, key) is None:
-                    state_dict.pop('.'.join(keys))
-            if module.__class__.__name__.startswith('InstanceNorm') and \
-               (key == 'num_batches_tracked'):
-                state_dict.pop('.'.join(keys))
-        else:
-            self.__patch_instance_norm_state_dict(state_dict, getattr(module, key), keys, i + 1)
+    # def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
+    #     """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
+    #     key = keys[i]
+    #     if i + 1 == len(keys):  # at the end, pointing to a parameter/buffer
+    #         if module.__class__.__name__.startswith('InstanceNorm') and \
+    #                 (key == 'running_mean' or key == 'running_var'):
+    #             if getattr(module, key) is None:
+    #                 state_dict.pop('.'.join(keys))
+    #         if module.__class__.__name__.startswith('InstanceNorm') and \
+    #            (key == 'num_batches_tracked'):
+    #             state_dict.pop('.'.join(keys))
+    #     else:
+    #         self.__patch_instance_norm_state_dict(state_dict, getattr(module, key), keys, i + 1)
 
     def load_networks(self, epoch):
         """Load all the networks from the disk.
@@ -176,21 +176,41 @@ class BaseModel(ABC):
         for name in self.model_names:
             if isinstance(name, str):
                 load_filename = '%s_net_%s.pth' % (epoch, name)
-                load_path = os.path.join(self.save_dir, load_filename)
+                #load_path = os.path.join(self.save_dir, load_filename)
+                load_path = os.path.join(self.opt.checkpoints_dir, self.opt.load_pretrain, load_filename)
                 net = getattr(self, 'net' + name)
                 if isinstance(net, torch.nn.DataParallel):
                     net = net.module
                 print('loading the models from %s' % load_path)
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
-                state_dict = torch.load(load_path, map_location=str(self.device))
-                if hasattr(state_dict, '_metadata'):
-                    del state_dict._metadata
+                # state_dict = torch.load(load_path, map_location=str(self.device))
+                # if hasattr(state_dict, '_metadata'):
+                #     del state_dict._metadata
+                #
+                # # patch InstanceNorm checkpoints prior to 0.4
+                # for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
+                #     self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
+                # net.load_state_dict(state_dict)
 
-                # patch InstanceNorm checkpoints prior to 0.4
-                for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
-                    self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
-                net.load_state_dict(state_dict)
+                try:
+                    net.load_state_dict(torch.load(load_path))
+
+                    print('only load G')
+                except:
+                    pretrained_dict = torch.load(load_path)
+                    model_dict = net.state_dict()
+                    print('successfully load net %s'.format(name))
+                    try:
+                        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+                        net.load_state_dict(pretrained_dict)
+                        print('more parameters on ckpt')
+                    except:
+                        for k, v in pretrained_dict.items():
+                            if v.size() == model_dict[k].size():
+                                model_dict[k] = v
+                        net.load_state_dict(model_dict)
+                        print('fewer parameters on ckpt')
 
     def print_networks(self, verbose):
         """Print the total number of parameters in the network and (if verbose) network architecture

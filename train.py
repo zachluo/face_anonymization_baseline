@@ -73,5 +73,9 @@ if __name__ == '__main__':
             model.save_networks('latest')
             model.save_networks(epoch)
 
+        # if opt.epoch_fix_global != 0 and epoch == opt.epoch_fix_global:
+        #     print('time to train the whole generator')
+        #     model.update_learning_param()
+
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.niter + opt.niter_decay, time.time() - epoch_start_time))
         model.update_learning_rate()                     # update learning rates at the end of every epoch.

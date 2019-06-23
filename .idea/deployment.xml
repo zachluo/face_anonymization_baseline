@@ -5,7 +5,7 @@
       <paths name="ai">
         <serverdata>
           <mappings>
-            <mapping deploy="/root/project/face_anonymize" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/p300/project/face_anonymize" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

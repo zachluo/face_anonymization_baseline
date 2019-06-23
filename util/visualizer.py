@@ -14,27 +14,29 @@ else:
     VisdomExceptionBase = ConnectionError
 
 
-def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
+def save_images(webpage, visuals, image_path, index, aspect_ratio=1.0, width=256):
     """Save images to the disk.
 
     Parameters:
         webpage (the HTML class) -- the HTML webpage class that stores these imaegs (see html.py for more details)
         visuals (OrderedDict)    -- an ordered dictionary that stores (name, images (either tensor or numpy) ) pairs
         image_path (str)         -- the string is used to create image paths
+        index (int)              -- index of a batch
         aspect_ratio (float)     -- the aspect ratio of saved images
         width (int)              -- the images will be resized to width x width
 
     This function will save images stored in 'visuals' to the HTML file specified by 'webpage'.
     """
     image_dir = webpage.get_image_dir()
-    short_path = ntpath.basename(image_path[0])
-    name = os.path.splitext(short_path)[0]
+    # short_path = ntpath.basename(image_path[index])
+    short_path = image_path[index].split('/')[-2:]
+    name = '_'.join([short_path[0], os.path.splitext(short_path[1])[0]])
 
     webpage.add_header(name)
     ims, txts, links = [], [], []
 
     for label, im_data in visuals.items():
-        im = util.tensor2im(im_data)
+        im = util.tensor2im(im_data[index])
         image_name = '%s_%s.png' % (name, label)
         save_path = os.path.join(image_dir, image_name)
         h, w, _ = im.shape
@@ -126,7 +128,7 @@ class Visualizer():
                 images = []
                 idx = 0
                 for label, image in visuals.items():
-                    image_numpy = util.tensor2im(image)
+                    image_numpy = util.tensor2im(image[0])
                     image_numpy = cv2.resize(image_numpy, (self.opt.load_size, self.opt.load_size))
                     label_html_row += '<td>%s</td>' % label
                     images.append(image_numpy.transpose([2, 0, 1]))
@@ -155,7 +157,7 @@ class Visualizer():
                 idx = 1
                 try:
                     for label, image in visuals.items():
-                        image_numpy = util.tensor2im(image)
+                        image_numpy = util.tensor2im(image[0])
                         self.vis.image(image_numpy.transpose([2, 0, 1]), opts=dict(title=label),
                                        win=self.display_id + idx)
                         idx += 1
@@ -166,7 +168,7 @@ class Visualizer():
             self.saved = True
             # save images to the disk
             for label, image in visuals.items():
-                image_numpy = util.tensor2im(image)
+                image_numpy = util.tensor2im(image[0])
                 img_path = os.path.join(self.img_dir, 'epoch%.3d_%s.png' % (epoch, label))
                 util.save_image(image_numpy, img_path)
 
@@ -177,7 +179,7 @@ class Visualizer():
                 ims, txts, links = [], [], []
 
                 for label, image_numpy in visuals.items():
-                    image_numpy = util.tensor2im(image)
+                    image_numpy = util.tensor2im(image[0])
                     img_path = 'epoch%.3d_%s.png' % (n, label)
                     ims.append(img_path)
                     txts.append(label)

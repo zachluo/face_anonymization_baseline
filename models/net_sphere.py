@@ -93,7 +93,7 @@ class AngleLoss(nn.Module):
 
 
 class sphere20a(nn.Module):
-    def __init__(self, classnum=10574, feature=False):
+    def __init__(self,classnum=10574,feature=False):
         super(sphere20a, self).__init__()
         self.classnum = classnum
         self.feature = feature
@@ -180,10 +180,9 @@ class sphere20a(nn.Module):
         state_dict = torch.load(net_path)
         for name, param in state_dict.items():
             if name == 'fc6.weight':
-                print(torch.mean(param))
+                #print(torch.mean(param))
                 continue
             if isinstance(param, Parameter):
                 # backwards compatibility for serialized parameters
                 param = param.data
             own_state[name].copy_(param)
-
